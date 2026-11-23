@@ -1,0 +1,238 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Manga Uploader</title>
+  <style>
+    * { box-sizing: border-box; font-family: -apple-system, sans-serif; }
+    body { background: #191a1c; color: #f0f1f3; max-width: 540px; margin: 0 auto; padding: 16px; }
+    h2 { color: #ff6740; margin-bottom: 12px; }
+    .box { background: #242629; padding: 16px; border-radius: 8px; margin-bottom: 18px; }
+    label { display: block; font-size: 0.85rem; color: #b5b9c0; margin: 10px 0 4px; font-weight: 600; }
+    input, textarea, select {
+      width: 100%; padding: 10px; border-radius: 6px; border: 1px solid #3c3f45;
+      background: #191a1c; color: #fff; font-size: 0.95rem;
+    }
+    button {
+      width: 100%; padding: 12px; margin-top: 14px; background: #ff6740; color: #fff;
+      border: none; border-radius: 6px; font-weight: 700; font-size: 1rem; cursor: pointer;
+    }
+    button:disabled { opacity: 0.5; }
+    #log { background: #111; padding: 12px; border-radius: 6px; font-family: monospace; font-size: 0.82rem; white-space: pre-wrap; margin-top: 12px; color: #4ade80; }
+  </style>
+</head>
+<body>
+
+  <h2>📤 Upload Manga & Chapters</h2>
+
+  <!-- 1. GitHub Credentials (Saved locally in your phone browser) -->
+  <div class="box">
+    <strong>1. GitHub Connection</strong>
+    <label>GitHub Username</label>
+    <input id="ghUser" placeholder="e.g. johndoe" />
+    <label>Repository Name</label>
+    <input id="ghRepo" placeholder="e.g. my-manga" />
+    <label>Personal Access Token (repo scope)</label>
+    <input id="ghToken" type="password" placeholder="ghp_xxxxxxxxxxxx" />
+    <button onclick="saveConfig()">Save & Load Library</button>
+  </div>
+
+  <!-- 2. Create New Manga Series -->
+  <div class="box">
+    <strong>2. Create New Manga Series</strong>
+    <label>Title</label>
+    <input id="mTitle" placeholder="e.g. Kakushigoto" />
+    <label>Subtitle / Alt Title</label>
+    <input id="mAlt" placeholder="e.g. I Have a Secret" />
+    <label>Author / Artist</label>
+    <input id="mAuthor" placeholder="e.g. Sumino Yoru" />
+    <label>Tags (comma separated)</label>
+    <input id="mTags" placeholder="Romance, Drama, School Life" />
+    <label>Status</label>
+    <input id="mStatus" value="2026, ONGOING" />
+    <label>Description</label>
+    <textarea id="mDesc" rows="3" placeholder="Synopsis..."></textarea>
+    <label>Cover Image</label>
+    <input id="mCover" type="file" accept="image/*" />
+    <button id="createSeriesBtn" onclick="createSeries()">Create Series</button>
+  </div>
+
+  <!-- 3. Upload Chapter Pages -->
+  <div class="box">
+    <strong>3. Upload Chapter Pages</strong>
+    <label>Select Manga</label>
+    <select id="mangaSelect"></select>
+    <label>Chapter Number</label>
+    <input id="chNum" type="number" step="0.1" placeholder="e.g. 1" />
+    <label>Chapter Title (optional)</label>
+    <input id="chTitle" placeholder="e.g. The Beginning" />
+    <label>Select Pages (in reading order)</label>
+    <input id="chPages" type="file" accept="image/*" multiple />
+    <button id="uploadChBtn" onclick="uploadChapter()">Upload Chapter</button>
+  </div>
+
+  <div id="log">Ready. Enter your GitHub details above first.</div>
+
+  <script>
+    let repoData = { mangas: [] };
+    let dataSha = null;
+
+    function log(msg) {
+      document.getElementById('log').textContent = msg;
+    }
+
+    window.onload = () => {
+      ['ghUser', 'ghRepo', 'ghToken'].forEach(k => {
+        if (localStorage.getItem(k)) document.getElementById(k).value = localStorage.getItem(k);
+      });
+      if (localStorage.getItem('ghToken')) loadDataJson();
+    };
+
+    function saveConfig() {
+      ['ghUser', 'ghRepo', 'ghToken'].forEach(k => {
+        localStorage.setItem(k, document.getElementById(k).value.trim());
+      });
+      loadDataJson();
+    }
+
+    function getHeaders() {
+      return {
+        'Authorization': `token ${document.getElementById('ghToken').value.trim()}`,
+        'Accept': 'application/vnd.github.v3+json',
+        'Content-Type': 'application/json'
+      };
+    }
+
+    function apiUrl(path) {
+      const u = document.getElementById('ghUser').value.trim();
+      const r = document.getElementById('ghRepo').value.trim();
+      return `https://api.github.com/repos/${u}/${r}/contents/${path}`;
+    }
+
+    async function loadDataJson() {
+      log('Loading library from GitHub...');
+      const res = await fetch(apiUrl('data.json') + '?t=' + Date.now(), { headers: getHeaders() });
+      if (!res.ok) { log('Error loading data.json. Check username, repo, and token.'); return; }
+      const json = await res.json();
+      dataSha = json.sha;
+      repoData = JSON.parse(decodeURIComponent(escape(atob(json.content))));
+      refreshDropdown();
+      log(`Connected! Found ${repoData.mangas.length} manga(s).`);
+    }
+
+    function refreshDropdown() {
+      const sel = document.getElementById('mangaSelect');
+      sel.innerHTML = repoData.mangas.map(m => `<option value="${m.id}">${m.title}</option>`).join('');
+    }
+
+    function fileToBase64(file) {
+      return new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(reader.result.split(',')[1]);
+        reader.onerror = reject;
+        reader.readAsDataURL(file);
+      });
+    }
+
+    async function putFile(path, base64Content, message, sha = null) {
+      const body = { message, content: base64Content };
+      if (sha) body.sha = sha;
+      const res = await fetch(apiUrl(path), {
+        method: 'PUT',
+        headers: getHeaders(),
+        body: JSON.stringify(body)
+      });
+      if (!res.ok) throw new Error(`Failed uploading ${path}`);
+      return await res.json();
+    }
+
+    async function saveDataJson(commitMsg) {
+      const encoded = btoa(unescape(encodeURIComponent(JSON.stringify(repoData, null, 2))));
+      const res = await putFile('data.json', encoded, commitMsg, dataSha);
+      dataSha = res.content.sha;
+    }
+
+    async function createSeries() {
+      const title = document.getElementById('mTitle').value.trim();
+      const coverFile = document.getElementById('mCover').files[0];
+      if (!title || !coverFile) return alert('Title and Cover Image are required.');
+
+      const btn = document.getElementById('createSeriesBtn');
+      btn.disabled = true;
+      try {
+        const id = title.toLowerCase().replace(/[^a-z0-9]+/g, '-') + '-' + Date.now().toString().slice(-4);
+        const ext = coverFile.name.split('.').pop();
+        const coverPath = `uploads/${id}/cover.${ext}`;
+
+        log('Uploading cover image...');
+        const b64 = await fileToBase64(coverFile);
+        await putFile(coverPath, b64, `Add cover for ${title}`);
+
+        repoData.mangas.push({
+          id,
+          title,
+          altTitle: document.getElementById('mAlt').value.trim(),
+          author: document.getElementById('mAuthor').value.trim(),
+          tags: document.getElementById('mTags').value.split(',').map(t => t.trim()).filter(Boolean),
+          status: document.getElementById('mStatus').value.trim(),
+          description: document.getElementById('mDesc').value.trim(),
+          cover: coverPath,
+          chapters: []
+        });
+
+        log('Updating data.json...');
+        await saveDataJson(`Create series: ${title}`);
+        refreshDropdown();
+        log(`Success! "${title}" created. Wait ~1 min for GitHub Pages to refresh.`);
+      } catch (e) {
+        log('Error: ' + e.message);
+      }
+      btn.disabled = false;
+    }
+
+    async function uploadChapter() {
+      const mangaId = document.getElementById('mangaSelect').value;
+      const chNum = document.getElementById('chNum').value.trim();
+      const chTitle = document.getElementById('chTitle').value.trim();
+      const files = Array.from(document.getElementById('chPages').files);
+      if (!mangaId || !chNum || !files.length) return alert('Select a manga, chapter number, and page images.');
+
+      // Sort files naturally by filename (e.g., 1.jpg, 2.jpg, 10.jpg)
+      files.sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true }));
+
+      const btn = document.getElementById('uploadChBtn');
+      btn.disabled = true;
+      try {
+        const manga = repoData.mangas.find(m => m.id === mangaId);
+        const pagePaths = [];
+
+        for (let i = 0; i < files.length; i++) {
+          log(`Uploading page ${i + 1} of ${files.length}...`);
+          const ext = files[i].name.split('.').pop();
+          const pName = String(i + 1).padStart(3, '0') + '.' + ext;
+          const fullPath = `uploads/${mangaId}/ch-${chNum}/${pName}`;
+          const b64 = await fileToBase64(files[i]);
+          await putFile(fullPath, b64, `Upload ${manga.title} Ch.${chNum} p.${i + 1}`);
+          pagePaths.push(fullPath);
+        }
+
+        manga.chapters.push({
+          number: chNum,
+          title: chTitle,
+          date: new Date().toLocaleDateString(),
+          pages: pagePaths
+        });
+        manga.chapters.sort((a, b) => Number(a.number) - Number(b.number));
+
+        log('Saving chapter to data.json...');
+        await saveDataJson(`Add ${manga.title} Chapter ${chNum}`);
+        log(`Done! Chapter ${chNum} uploaded (${files.length} pages). Share your site link!`);
+      } catch (e) {
+        log('Error: ' + e.message);
+      }
+      btn.disabled = false;
+    }
+  </script>
+</body>
+</html>
